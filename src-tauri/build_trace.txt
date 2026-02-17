@@ -1,0 +1,33 @@
+﻿cargo :    Compiling 
+tokio v1.49.0
+At line:1 char:1
++ cargo build 
+--target aarch64-linu
+x-android > 
+build_log.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
+~~
+    + CategoryInfo   
+           : NotSpe  
+  cified: (   Comp   
+ iling tokio v1.4    
+9.0:String) [],     
+RemoteException
+    + FullyQualified 
+   ErrorId : Native  
+  CommandError
+ 
+   Compiling jni 
+v0.21.1
+   Compiling brotli 
+v8.0.2
+   Compiling 
+zerocopy v0.8.39
+   Compiling 
+num-traits v0.2.19
+   Compiling 
+env_filter v0.1.4
+   Compiling 
+android_log-sys 
