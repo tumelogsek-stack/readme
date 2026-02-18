@@ -9,7 +9,7 @@ export interface BookMetadata {
   id: number;
   title: string;
   filename: string;
-  last_cfi: string;
+  last_cfi?: string;
   cover?: string;
   locations_data?: string;
   last_percentage: number;

@@ -21,6 +21,7 @@ declare module 'epubjs' {
       save(): string;
       load(locations: string): void;
       percentageFromCfi(cfi: string): number;
+      cfiFromPercentage(percentage: number): string;
       locationFromCfi(cfi: string): number | string;
       length(): number;
     };

@@ -19,6 +19,15 @@ pub struct Highlight {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Bookmark {
+    pub id: i64,
+    pub book_title: String,
+    pub cfi: String,
+    pub label: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BookMetadata {
     pub id: i64,
     pub title: String,
@@ -52,6 +61,13 @@ fn init_db(conn: &Connection) {
             filename    TEXT    NOT NULL,
             last_cfi    TEXT    NOT NULL DEFAULT '',
             cover       TEXT,
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_title  TEXT    NOT NULL,
+            cfi         TEXT    NOT NULL,
+            label       TEXT    NOT NULL,
             created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
         );",
     )
@@ -354,6 +370,102 @@ fn delete_highlight(state: tauri::State<DbState>, id: i64) -> Result<(), String>
     Ok(())
 }
 
+#[tauri::command]
+fn add_bookmark(
+    state: tauri::State<DbState>,
+    book_title: String,
+    cfi: String,
+    label: String,
+) -> Result<Bookmark, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO bookmarks (book_title, cfi, label) VALUES (?1, ?2, ?3)",
+        params![book_title, cfi, label],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let id = conn.last_insert_rowid();
+
+    let bookmark = conn
+        .query_row(
+            "SELECT id, book_title, cfi, label, created_at FROM bookmarks WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Bookmark {
+                    id: row.get(0)?,
+                    book_title: row.get(1)?,
+                    cfi: row.get(2)?,
+                    label: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(bookmark)
+}
+
+#[tauri::command]
+fn get_bookmarks(
+    state: tauri::State<DbState>,
+    book_title: String,
+) -> Result<Vec<Bookmark>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, book_title, cfi, label, created_at FROM bookmarks WHERE book_title = ?1 ORDER BY created_at DESC")
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![book_title], |row| {
+            Ok(Bookmark {
+                id: row.get(0)?,
+                book_title: row.get(1)?,
+                cfi: row.get(2)?,
+                label: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut bookmarks = Vec::new();
+    for row in rows {
+        bookmarks.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(bookmarks)
+}
+
+#[tauri::command]
+fn delete_bookmark(state: tauri::State<DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM bookmarks WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn wipe_all_data(app: tauri::AppHandle, state: tauri::State<DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+
+    // 1. Clear DB
+    conn.execute_batch(
+        "DELETE FROM highlights;
+         DELETE FROM books;
+         DELETE FROM bookmarks;
+         VACUUM;",
+    )
+    .map_err(|e| e.to_string())?;
+
+    // 2. Delete all book files
+    let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let books_dir = app_dir.join("books");
+    if books_dir.exists() {
+        std::fs::remove_dir_all(&books_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&books_dir).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // App entry
 // ---------------------------------------------------------------------------
@@ -395,7 +507,11 @@ pub fn run() {
             get_all_highlights,
             delete_highlight,
             delete_book,
-            update_highlight_notes
+            update_highlight_notes,
+            add_bookmark,
+            get_bookmarks,
+            delete_bookmark,
+            wipe_all_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

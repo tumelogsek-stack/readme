@@ -321,32 +321,37 @@ body {
   min-height: 0;
   position: relative;
   background: var(--bg-secondary);
+  transition: padding 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.reader-view {
+.reader-view-stable {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.reader-view-target {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  transition: max-width 0.4s cubic-bezier(0.4, 0, 0.2, 1), 
-              margin 0.4s cubic-bezier(0.4, 0, 0.2, 1),
-              opacity 0.4s ease-out,
-              transform 0.4s ease-out;
-  animation: fadeIn 0.6s ease-out;
 }
 
-.reader-view.layout-changing {
+/* Layout Modes applied to container */
+.reader-container.layout-changing .reader-view-stable {
   opacity: 0;
   transform: translateY(10px);
   pointer-events: none;
-  transition: none; /* Snap to hidden state immediately */
 }
 
-.reader-view.layout-focus {
+.reader-container.layout-focus .reader-view-stable {
   max-width: 650px;
   margin: 0 auto;
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
+
 
 /* Progress Scrubber */
 .reader-progress-container {
@@ -1416,4 +1421,74 @@ body {
 
 .active .compact-book-title {
   color: var(--accent);
+}
+
+/* Bookmark Items in Sidebar */
+.bookmark-item .sidebar-item-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.bookmark-label {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.reader-bookmark-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.reader-bookmark-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--accent);
+}
+
+.reader-bookmark-btn.active {
+  color: var(--accent);
+  background: rgba(129, 140, 248, 0.1);
+}
+
+/* Sidebar Tabs */
+.sidebar-tabs {
+  display: flex;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 4px;
+  border-radius: 12px;
+  margin-right: 12px;
+}
+
+.sidebar-tab {
+  padding: 6px 16px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.sidebar-tab:hover {
+  color: var(--text-primary);
+}
+
+.sidebar-tab.active {
+  background: var(--bg-card);
+  color: var(--accent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }

@@ -12,6 +12,7 @@ export interface HighlightPayload {
 }
 
 interface TOCItem {
+  id: string;
   href: string;
   label: string;
   subitems?: TOCItem[];
@@ -38,10 +39,12 @@ interface RenditionExtension extends Rendition {
 
 interface BookExtension extends Book {
   spine: {
-    get: (href: string) => { cfiBase?: string } | undefined;
+    get: (href: string) => { cfiBase?: string; href: string } | undefined;
   };
   navigation: {
     toc: TOCItem[];
+    landmarks: unknown[];
+    length: number;
   };
 }
 
@@ -58,6 +61,7 @@ interface ReaderProps {
   onBookInit?: (locations: string) => void;
   onToggleHighlights: () => void;
   highlightsCount: number;
+  onAddBookmark: (label: string, cfi: string) => void;
 }
 
 type LayoutMode = "full" | "focus" | "newspaper";
@@ -75,12 +79,14 @@ export default function Reader({
   onBookInit,
   onToggleHighlights,
   highlightsCount,
+  onAddBookmark,
 }: ReaderProps) {
   // 1. State declarations
   const [chapter, setChapter] = useState("");
   const [progress, setProgress] = useState(0); 
   const [globalProgress, setGlobalProgress] = useState(0); 
   const [showPopover, setShowPopover] = useState(false);
+  const [isBookmarking, setIsBookmarking] = useState(false);
   const [popoverPos, setPopoverPos] = useState({ x: 0, y: 0 });
   const [renditionReady, setRenditionReady] = useState(false);
   const [popoverMode, setPopoverMode] = useState<"actions" | "colors" | "note">("actions");
@@ -111,6 +117,8 @@ export default function Reader({
   const chapterTicksRef = useRef<{ percentage: number; label: string }[]>([]);
   const locationsReadyRef = useRef(false);
   const globalProgressRef = useRef(0);
+  const currentLocationRef = useRef<{ cfi: string; percentage: number } | null>(null);
+  const isSettledRef = useRef(false);
 
   // Lifting helper functions out of useEffect
   const generateChapterTicks = useCallback(async (bookObj: Book) => {
@@ -263,6 +271,7 @@ export default function Reader({
 
   // Init book
   useEffect(() => {
+    let isMounted = true;
     if (!viewerRef.current || !bookData) return;
     const initialLocation = initialCfi;
     const container = viewerRef.current;
@@ -294,24 +303,109 @@ export default function Reader({
         "::selection": { "background": "rgba(129, 140, 248, 0.4) !important" },
       });
 
-      // Display the book IMMEDIATELY (Only use initialLocation for the first display)
-      rendition.display(initialLocation || undefined).then(() => {
+      // Display the book with fallback logic
+      const isValidCfi = (cfi?: string): boolean => {
+        if (!cfi || typeof cfi !== 'string') return false;
+        // Basic CFI format check: should start with epubcfi(
+        return cfi.trim().startsWith('epubcfi(') && cfi.includes(')');
+      };
+
+      const locationToUse = isValidCfi(initialLocation) ? initialLocation : undefined;
+      console.log("Reader: Initial location:", initialLocation, "-> Using:", locationToUse || "START");
+      
+      const tryDisplay = async (cfi?: string): Promise<boolean> => {
+        try {
+          console.log(`Reader: Calling rendition.display(${cfi ? cfi.substring(0, 40) + '...' : 'default'})`);
+          await rendition.display(cfi || undefined);
+          
+          // Verify content was actually rendered by checking for an iframe
+          await new Promise(r => setTimeout(r, 100));
+          const iframe = container.querySelector('iframe');
+          if (iframe && iframe.contentDocument?.body) {
+            const bodyText = iframe.contentDocument.body.innerText || '';
+            if (bodyText.trim().length > 0) {
+              console.log("Reader: Display SUCCESS - content verified");
+              return true;
+            }
+            console.warn("Reader: Display produced empty iframe body");
+          } else {
+            console.warn("Reader: No iframe found after display");
+          }
+          // Even if content check fails, the display call itself succeeded
+          // epub.js may render asynchronously, so trust it
+          return true;
+        } catch (err) {
+          console.warn(`Reader: Failed to display:`, err);
+          return false;
+        }
+      };
+
+      (async () => {
+        // Wait for container to be laid out
+        await new Promise(r => setTimeout(r, 50));
+        if (!isMounted) return;
+
+        let success = await tryDisplay(locationToUse);
+        
+        // If saved CFI failed, fall back to start of book
+        if (!success && locationToUse) {
+          console.log("Reader: Falling back to start of book");
+          success = await tryDisplay();
+        }
+
+        if (!success || !isMounted) {
+          console.error("Reader: Critical failure - Could not display book");
+          return;
+        }
+
         setRenditionReady(true);
         
-        // Hydration Logic: Load from cache or generate
+        // STABILIZATION: Force resize after display
+        const doResize = () => {
+          if (!renditionRef.current || !container) return false;
+          const { width, height } = container.getBoundingClientRect();
+          if (width > 0 && height > 0) {
+            console.log(`Reader: Resizing to ${width}x${height}`);
+            renditionRef.current.resize(width, height);
+            return true;
+          }
+          return false;
+        };
+
+        if ((rendition as RenditionExtension).manager) {
+          if (!doResize()) {
+            // Container not ready yet — observe for size changes
+            const observer = new ResizeObserver(() => {
+              if (doResize()) {
+                observer.disconnect();
+              }
+            });
+            observer.observe(container);
+          }
+        }
+
+        // Mark as settled after a delay
+        setTimeout(() => {
+          if (isMounted) {
+            isSettledRef.current = true;
+            console.log("Reader: Layout settled");
+          }
+        }, 1200);
+
+        // Hydration Logic: Load locations from cache or generate
         if (savedLocations) {
           try {
             book.locations.load(savedLocations);
             setLocationsReady(true);
             generateChapterTicks(book);
           } catch (e) {
-            console.error("Failed to load saved locations:", e);
+            console.error("Reader: Failed to load saved locations:", e);
             startLocationGeneration(book);
           }
         } else {
           startLocationGeneration(book);
         }
-      });
+      })();
 
       // Chapter label & Progress
       rendition.on("relocated", (location: EpubLocation) => {
@@ -357,20 +451,24 @@ export default function Reader({
               if (currentChap) setChapter(currentChap.label);
             }
 
-            if (onLocationChangeRef.current) {
+            if (onLocationChangeRef.current && isSettledRef.current) {
               onLocationChangeRef.current(location.start.cfi, globalPct100);
             }
+            // Store for bookmarking
+            currentLocationRef.current = { cfi: location.start.cfi, percentage: globalPct100 };
           } else {
             const pct = location.start.percentage || 0;
             const pct100 = pct * 100;
             setProgress(Math.round(pct100));
-            if (onLocationChangeRef.current) {
+            if (onLocationChangeRef.current && isSettledRef.current) {
               onLocationChangeRef.current(location.start.cfi, pct100);
             }
+            // Store for bookmarking
+            currentLocationRef.current = { cfi: location.start.cfi, percentage: pct100 };
           }
         }
         
-        if (book.locations.length() > 0) {
+        if (locationsReadyRef.current && book.locations.length() > 0) {
           // If we have generated locations, we can get a global page number
           const currentLoc = book.locations.locationFromCfi(location.start.cfi);
           const totalLocs = book.locations.length();
@@ -437,6 +535,7 @@ export default function Reader({
     });
 
     return () => {
+      isMounted = false;
       if (renditionRef.current) renditionRef.current.destroy();
       if (bookRef.current) bookRef.current.destroy();
     };
@@ -609,7 +708,7 @@ export default function Reader({
     isDraggingScrubber.current = false;
     const val = parseFloat(e.currentTarget.value);
     
-    if (bookRef.current && renditionRef.current && locationsReadyRef.current) {
+    if (bookRef.current && renditionRef.current && locationsReadyRef.current && bookRef.current.locations.length() > 0) {
       // Current global percentage (cached in ref)
       const globalPctNow = globalProgressRef.current;
       const currentTicks = chapterTicksRef.current;
@@ -693,6 +792,23 @@ export default function Reader({
     return () => window.removeEventListener("navigate-cfi", handler);
   }, []);
 
+  const handleBookmark = async () => {
+    if (!currentLocationRef.current) return;
+    setIsBookmarking(true);
+    try {
+      // Use chapter title as label, or fallback to generic "Bookmark"
+      const label = chapter || "Bookmark";
+      onAddBookmark(label, currentLocationRef.current.cfi);
+      
+      // Visual feedback: briefly show "Saved!" or similar? 
+      // For now just finish the action.
+    } catch (err) {
+      console.error("Failed to bookmark page:", err);
+    } finally {
+      setTimeout(() => setIsBookmarking(false), 500);
+    }
+  };
+
   return (
     <div 
       className="reader-wrapper" 
@@ -725,6 +841,18 @@ export default function Reader({
           <span className="layout-mode-label">{layoutMode === 'full' ? 'Aa' : layoutMode === 'focus' ? 'Focus' : 'News'}</span>
         </button>
         <button 
+          className={`reader-bookmark-btn ${isBookmarking ? "active" : ""}`}
+          onClick={handleBookmark}
+          type="button"
+          title="Save Bookmark"
+          disabled={isBookmarking}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill={isBookmarking ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+          </svg>
+        </button>
+
+        <button 
           className="reader-highlights-toggle-btn" 
           onClick={onToggleHighlights} 
           type="button"
@@ -739,8 +867,10 @@ export default function Reader({
       </div>
 
       {/* Reader container */}
-      <div className="reader-container">
-        <div className={`reader-view layout-${layoutMode} ${isLayoutChanging ? 'layout-changing' : ''}`} ref={viewerRef} />
+      <div className={`reader-container layout-${layoutMode} ${isLayoutChanging ? 'layout-changing' : ''} ${!isUIVisible ? "ui-hidden" : ""}`}>
+        <div className="reader-view-stable">
+          <div ref={viewerRef} className="reader-view-target" />
+        </div>
       </div>
 
       {/* Progress Scrubber */}
