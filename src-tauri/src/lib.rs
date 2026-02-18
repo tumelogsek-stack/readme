@@ -28,6 +28,14 @@ pub struct Bookmark {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub emoji: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BookMetadata {
     pub id: i64,
     pub title: String,
@@ -95,6 +103,24 @@ fn init_db(conn: &Connection) {
         "ALTER TABLE books ADD COLUMN last_percentage REAL NOT NULL DEFAULT 0.0",
         [],
     );
+
+    // Collections tables
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS collections (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT    NOT NULL UNIQUE,
+            emoji       TEXT    NOT NULL DEFAULT '📌',
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS highlight_collections (
+            highlight_id   INTEGER NOT NULL,
+            collection_id  INTEGER NOT NULL,
+            PRIMARY KEY (highlight_id, collection_id),
+            FOREIGN KEY (highlight_id) REFERENCES highlights(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+        );",
+    )
+    .expect("Failed to create collections tables");
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +493,173 @@ fn wipe_all_data(app: tauri::AppHandle, state: tauri::State<DbState>) -> Result<
 }
 
 // ---------------------------------------------------------------------------
+// Collection commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn create_collection(
+    state: tauri::State<DbState>,
+    name: String,
+    emoji: String,
+) -> Result<Collection, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO collections (name, emoji) VALUES (?1, ?2)",
+        params![name, emoji],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    let collection = conn
+        .query_row(
+            "SELECT id, name, emoji, created_at FROM collections WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Collection {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    emoji: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(collection)
+}
+
+#[tauri::command]
+fn get_all_collections(state: tauri::State<DbState>) -> Result<Vec<Collection>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, emoji, created_at FROM collections ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                emoji: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut collections = Vec::new();
+    for r in rows {
+        collections.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(collections)
+}
+
+#[tauri::command]
+fn delete_collection(state: tauri::State<DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM highlight_collections WHERE collection_id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM collections WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn add_highlight_to_collection(
+    state: tauri::State<DbState>,
+    highlight_id: i64,
+    collection_id: i64,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO highlight_collections (highlight_id, collection_id) VALUES (?1, ?2)",
+        params![highlight_id, collection_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_highlight_from_collection(
+    state: tauri::State<DbState>,
+    highlight_id: i64,
+    collection_id: i64,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM highlight_collections WHERE highlight_id = ?1 AND collection_id = ?2",
+        params![highlight_id, collection_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_highlights_by_collection(
+    state: tauri::State<DbState>,
+    collection_id: i64,
+) -> Result<Vec<Highlight>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT h.id, h.book_title, h.cfi, h.text, h.color, h.notes, h.created_at
+             FROM highlights h
+             INNER JOIN highlight_collections hc ON h.id = hc.highlight_id
+             WHERE hc.collection_id = ?1
+             ORDER BY h.created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![collection_id], |row| {
+            Ok(Highlight {
+                id: row.get(0)?,
+                book_title: row.get(1)?,
+                cfi: row.get(2)?,
+                text: row.get(3)?,
+                color: row.get(4)?,
+                notes: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut highlights = Vec::new();
+    for r in rows {
+        highlights.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(highlights)
+}
+
+#[tauri::command]
+fn get_highlight_collections(
+    state: tauri::State<DbState>,
+    highlight_id: i64,
+) -> Result<Vec<Collection>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, c.name, c.emoji, c.created_at
+             FROM collections c
+             INNER JOIN highlight_collections hc ON c.id = hc.collection_id
+             WHERE hc.highlight_id = ?1
+             ORDER BY c.name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![highlight_id], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                emoji: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut collections = Vec::new();
+    for r in rows {
+        collections.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(collections)
+}
+
+// ---------------------------------------------------------------------------
 // App entry
 // ---------------------------------------------------------------------------
 
@@ -511,7 +704,14 @@ pub fn run() {
             add_bookmark,
             get_bookmarks,
             delete_bookmark,
-            wipe_all_data
+            wipe_all_data,
+            create_collection,
+            get_all_collections,
+            delete_collection,
+            add_highlight_to_collection,
+            remove_highlight_from_collection,
+            get_highlights_by_collection,
+            get_highlight_collections
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

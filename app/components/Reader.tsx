@@ -64,6 +64,50 @@ interface ReaderProps {
   onAddBookmark: (label: string, cfi: string) => void;
 }
 
+type ReaderTheme = "light" | "sepia" | "dark";
+
+const THEMES = {
+  light: {
+    body: {
+      background: "#ffffff !important",
+      color: "#000000 !important",
+      "font-family": "'Inter', 'Georgia', serif !important",
+      "line-height": "1.8 !important",
+      padding: "40px !important",
+    },
+    p: { color: "#000000 !important" },
+    "h1, h2, h3, h4, h5, h6": { color: "#000000 !important" },
+    a: { color: "#3b82f6 !important" },
+    "::selection": { background: "rgba(59, 130, 246, 0.2) !important" },
+  },
+  sepia: {
+    body: {
+      background: "#f4ecd8 !important",
+      color: "#5b4636 !important",
+      "font-family": "'Inter', 'Georgia', serif !important",
+      "line-height": "1.8 !important",
+      padding: "40px !important",
+    },
+    p: { color: "#5b4636 !important" },
+    "h1, h2, h3, h4, h5, h6": { color: "#433422 !important" },
+    a: { color: "#92400e !important" },
+    "::selection": { background: "rgba(146, 64, 14, 0.2) !important" },
+  },
+  dark: {
+    body: {
+      background: "#000000 !important",
+      color: "#d1d1d1 !important",
+      "font-family": "'Inter', 'Georgia', serif !important",
+      "line-height": "1.8 !important",
+      padding: "40px !important",
+    },
+    p: { color: "#d1d1d1 !important" },
+    "h1, h2, h3, h4, h5, h6": { color: "#ffffff !important" },
+    a: { color: "#818cf8 !important" },
+    "::selection": { background: "rgba(129, 140, 248, 0.4) !important" },
+  },
+};
+
 type LayoutMode = "full" | "focus" | "newspaper";
 
 export default function Reader({
@@ -106,7 +150,9 @@ export default function Reader({
   const [totalPages, setTotalPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [locationsReady, setLocationsReady] = useState(false);
-  const [isFirstRenderSettled, setIsFirstRenderSettled] = useState(false);
+  const [readerTheme, setReaderTheme] = useState<ReaderTheme>(() => {
+    return (localStorage.getItem("reader-theme") as ReaderTheme) || "dark";
+  });
 
   // 2. Refs for internal state tracking
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -270,6 +316,13 @@ export default function Reader({
     });
   };
 
+  const cycleTheme = () => {
+    setReaderTheme((prev: ReaderTheme) => {
+      const next: ReaderTheme = prev === "light" ? "sepia" : prev === "sepia" ? "dark" : "light";
+      return next;
+    });
+  };
+
   // Init book
   useEffect(() => {
     let isMounted = true;
@@ -290,24 +343,8 @@ export default function Reader({
 
       renditionRef.current = rendition;
 
-      rendition.themes.default({
-        "body": {
-          "background": "#1a1a2e !important",
-          "color": "#e0e0e0 !important",
-          "font-family": "'Inter', 'Georgia', serif !important",
-          "line-height": "1.8 !important",
-          "padding": "40px !important",
-        },
-        "p": { "color": "#e0e0e0 !important" },
-        "h1, h2, h3, h4, h5, h6": { "color": "#ffffff !important" },
-        "a": { "color": "#818cf8 !important" },
-        "::selection": { "background": "rgba(129, 140, 248, 0.4) !important" },
-      });
-
-      // Display the book with fallback logic
       const isValidCfi = (cfi?: string): boolean => {
         if (!cfi || typeof cfi !== 'string') return false;
-        // Basic CFI format check: should start with epubcfi(
         return cfi.trim().startsWith('epubcfi(') && cfi.includes(')');
       };
 
@@ -318,8 +355,6 @@ export default function Reader({
         try {
           console.log(`Reader: Calling rendition.display(${cfi ? cfi.substring(0, 40) + '...' : 'default'})`);
           await rendition.display(cfi || undefined);
-          
-          // Verify content was actually rendered by checking for an iframe
           await new Promise(r => setTimeout(r, 100));
           const iframe = container.querySelector('iframe');
           if (iframe && iframe.contentDocument?.body) {
@@ -328,13 +363,8 @@ export default function Reader({
               console.log("Reader: Display SUCCESS - content verified");
               return true;
             }
-            console.warn("Reader: Display produced empty iframe body");
-          } else {
-            console.warn("Reader: No iframe found after display");
           }
-          // Even if content check fails, the display call itself succeeded
-          // epub.js may render asynchronously, so trust it
-          return true;
+          return true; 
         } catch (err) {
           console.warn(`Reader: Failed to display:`, err);
           return false;
@@ -342,13 +372,28 @@ export default function Reader({
       };
 
       (async () => {
-        // Wait for container to be laid out
-        await new Promise(r => setTimeout(r, 50));
+        // 1. Initial configuration BEFORE display
+        rendition.themes.default(THEMES[readerTheme]);
+        
+        const isLargeScreen = window.innerWidth > 1000;
+        if (layoutMode === "newspaper" && isLargeScreen) {
+          rendition.spread("always");
+        } else {
+          rendition.spread("none");
+        }
+
+        await new Promise(r => setTimeout(r, 100));
         if (!isMounted) return;
 
+        const { width: initWidth, height: initHeight } = container.getBoundingClientRect();
+        if (initWidth > 0 && initHeight > 0) {
+          console.log(`Reader: Initial resize BEFORE display to ${initWidth}x${initHeight}`);
+          rendition.resize(initWidth, initHeight);
+        }
+
+        // 2. Display the book
         let success = await tryDisplay(locationToUse);
         
-        // If saved CFI failed, fall back to start of book
         if (!success && locationToUse) {
           console.log("Reader: Falling back to start of book");
           success = await tryDisplay();
@@ -361,12 +406,10 @@ export default function Reader({
 
         setRenditionReady(true);
         
-        // STABILIZATION: Force resize after display
         const doResize = () => {
           if (!renditionRef.current || !container) return false;
           const { width, height } = container.getBoundingClientRect();
           if (width > 0 && height > 0) {
-            console.log(`Reader: Resizing to ${width}x${height}`);
             renditionRef.current.resize(width, height);
             return true;
           }
@@ -375,24 +418,19 @@ export default function Reader({
 
         if ((rendition as RenditionExtension).manager) {
           if (!doResize()) {
-            // Container not ready yet — observe for size changes
             const observer = new ResizeObserver(() => {
-              if (doResize()) {
-                observer.disconnect();
-              }
+              if (doResize()) observer.disconnect();
             });
             observer.observe(container);
           }
         }
 
-          // Mark as settled after a delay
-          setTimeout(() => {
-            if (isMounted) {
-              isSettledRef.current = true;
-              setIsFirstRenderSettled(true);
-              console.log("Reader: Layout settled");
-            }
-          }, 1200);
+        setTimeout(() => {
+          if (isMounted) {
+            isSettledRef.current = true;
+            console.log("Reader: Layout settled");
+          }
+        }, 400);
 
         // Hydration Logic: Load locations from cache or generate
         if (savedLocations) {
@@ -823,6 +861,14 @@ export default function Reader({
     return () => window.removeEventListener("navigate-cfi", handler);
   }, []);
 
+  // Theme Change Effect
+  useEffect(() => {
+    if (renditionRef.current) {
+      renditionRef.current.themes.default(THEMES[readerTheme]);
+      localStorage.setItem("reader-theme", readerTheme);
+    }
+  }, [readerTheme]);
+
   const handleBookmark = async () => {
     if (!currentLocationRef.current) return;
     setIsBookmarking(true);
@@ -871,6 +917,19 @@ export default function Reader({
           </svg>
           <span className="layout-mode-label">{layoutMode === 'full' ? 'Aa' : layoutMode === 'focus' ? 'Focus' : 'News'}</span>
         </button>
+
+        <button 
+          className="reader-theme-btn" 
+          onClick={cycleTheme} 
+          type="button"
+          title={`Switch Theme (Current: ${readerTheme})`}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="5" />
+            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+          </svg>
+          <span className="theme-mode-label">{readerTheme.charAt(0).toUpperCase() + readerTheme.slice(1)}</span>
+        </button>
         <button 
           className={`reader-bookmark-btn ${isBookmarking ? "active" : ""}`}
           onClick={handleBookmark}
@@ -898,10 +957,8 @@ export default function Reader({
       </div>
 
       {/* Reader container */}
-      <div className={`reader-container layout-${layoutMode} ${isLayoutChanging ? 'layout-changing' : ''} ${!isUIVisible ? "ui-hidden" : ""}`}>
-        <div className={`reader-view-stable ${!isFirstRenderSettled ? "rendering" : ""}`}>
-          <div ref={viewerRef} className="reader-view-target" />
-        </div>
+      <div className={`reader-container layout-${layoutMode} theme-${readerTheme} ${isLayoutChanging ? 'layout-changing' : ''} ${!isUIVisible ? "ui-hidden" : ""}`}>
+        <div ref={viewerRef} className="reader-view-target" />
       </div>
 
       {/* Progress Scrubber */}

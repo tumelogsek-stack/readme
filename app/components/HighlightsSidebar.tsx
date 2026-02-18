@@ -40,6 +40,13 @@ export default function HighlightsSidebar({
   onToggle,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<"highlights" | "bookmarks">("highlights");
+  const [selectedColor, setSelectedColor] = useState<string | null>(null);
+
+  const uniqueColors = Array.from(new Set(highlights.map(h => h.color)));
+  const filteredHighlights = selectedColor 
+    ? highlights.filter(h => h.color === selectedColor)
+    : highlights;
+
   return (
     <>
       {/* Sidebar */}
@@ -68,13 +75,31 @@ export default function HighlightsSidebar({
         </div>
 
         <div className="sidebar-list">
+          {activeTab === "highlights" && uniqueColors.length > 1 && (
+            <div className="sidebar-color-filters">
+              <button 
+                className={`sidebar-color-dot all-colors ${selectedColor === null ? 'active' : ''}`}
+                onClick={() => setSelectedColor(null)}
+                title="All colors"
+              />
+              {uniqueColors.map(color => (
+                <button
+                  key={color}
+                  className={`sidebar-color-dot ${selectedColor === color ? 'active' : ''}`}
+                  style={{ backgroundColor: color }}
+                  onClick={() => setSelectedColor(selectedColor === color ? null : color)}
+                  title={`Filter by ${color}`}
+                />
+              ))}
+            </div>
+          )}
           {activeTab === "highlights" ? (
             highlights.length === 0 ? (
               <div className="sidebar-empty">
                 <p>No highlights yet.</p>
               </div>
             ) : (
-              highlights.map((hl) => (
+              filteredHighlights.map((hl) => (
                 <div
                   key={hl.id}
                   className="sidebar-item"
