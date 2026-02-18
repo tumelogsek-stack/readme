@@ -330,6 +330,12 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: filter 0.5s ease-in-out, opacity 0.5s ease-in-out;
+}
+
+.reader-view-stable.rendering {
+  filter: blur(8px);
+  opacity: 0.7;
 }
 
 .reader-view-target {

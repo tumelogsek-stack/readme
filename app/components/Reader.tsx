@@ -106,6 +106,7 @@ export default function Reader({
   const [totalPages, setTotalPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [locationsReady, setLocationsReady] = useState(false);
+  const [isFirstRenderSettled, setIsFirstRenderSettled] = useState(false);
 
   // 2. Refs for internal state tracking
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -384,13 +385,14 @@ export default function Reader({
           }
         }
 
-        // Mark as settled after a delay
-        setTimeout(() => {
-          if (isMounted) {
-            isSettledRef.current = true;
-            console.log("Reader: Layout settled");
-          }
-        }, 1200);
+          // Mark as settled after a delay
+          setTimeout(() => {
+            if (isMounted) {
+              isSettledRef.current = true;
+              setIsFirstRenderSettled(true);
+              console.log("Reader: Layout settled");
+            }
+          }, 1200);
 
         // Hydration Logic: Load locations from cache or generate
         if (savedLocations) {
@@ -556,6 +558,8 @@ export default function Reader({
 
   // Handle saved highlights independently to avoid re-rendering book
   const appliedCfis = useRef<Set<string>>(new Set());
+  const savedHighlightsRef = useRef(savedHighlights);
+  savedHighlightsRef.current = savedHighlights;
   
   useEffect(() => {
     if (!renditionRef.current || !renditionReady) return;
@@ -613,8 +617,35 @@ export default function Reader({
         const { width, height } = viewerRef.current.getBoundingClientRect();
         rendition.resize(width, height);
         
-        // End transition state after a short delay to match CSS
-        setTimeout(() => setIsLayoutChanging(false), 300);
+        // Re-apply highlights after layout reflow so SVG positions are recalculated
+        setTimeout(() => {
+          if (renditionRef.current && appliedCfis.current.size > 0) {
+            const currentHighlights = [...appliedCfis.current];
+            // Remove all existing highlight annotations
+            currentHighlights.forEach(cfi => {
+              try {
+                renditionRef.current!.annotations.remove(cfi, "highlight");
+              } catch (e) { /* ignore */ }
+            });
+            appliedCfis.current.clear();
+            
+            // Re-add them so epub.js recalculates SVG positions
+            savedHighlightsRef.current.forEach((hl: { cfi: string; color: string }) => {
+              try {
+                renditionRef.current!.annotations.highlight(hl.cfi, {}, () => {}, "", {
+                  fill: hl.color,
+                  "fill-opacity": "0.35",
+                  "mix-blend-mode": "multiply",
+                });
+                appliedCfis.current.add(hl.cfi);
+              } catch (e) {
+                console.warn("Failed to re-apply highlight after layout change:", hl.cfi, e);
+              }
+            });
+          }
+
+          setIsLayoutChanging(false);
+        }, 400);
       }
     };
 
@@ -868,7 +899,7 @@ export default function Reader({
 
       {/* Reader container */}
       <div className={`reader-container layout-${layoutMode} ${isLayoutChanging ? 'layout-changing' : ''} ${!isUIVisible ? "ui-hidden" : ""}`}>
-        <div className="reader-view-stable">
+        <div className={`reader-view-stable ${!isFirstRenderSettled ? "rendering" : ""}`}>
           <div ref={viewerRef} className="reader-view-target" />
         </div>
       </div>
