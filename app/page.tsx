@@ -92,6 +92,10 @@ export default function Home() {
   const onLocationChange = useCallback(
     async (cfi: string, percentage: number) => {
       if (!currentBook) return;
+      
+      // Update local state immediately so if Reader re-renders, it has the latest CFI
+      setCurrentBook(prev => prev ? { ...prev, last_cfi: cfi, last_percentage: percentage } : null);
+
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("update_book_progress", {
@@ -228,6 +232,8 @@ export default function Home() {
         onBack={goBack}
         savedLocations={currentBook.locations_data}
         onBookInit={onBookInit}
+        onToggleHighlights={() => setSidebarOpen((v) => !v)}
+        highlightsCount={highlights.length}
       />
       <HighlightsSidebar
         highlights={highlights}

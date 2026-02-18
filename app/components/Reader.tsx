@@ -45,6 +45,8 @@ interface ReaderProps {
   onBack: () => void;
   savedLocations?: string | null;
   onBookInit?: (locations: string) => void;
+  onToggleHighlights: () => void;
+  highlightsCount: number;
 }
 
 type LayoutMode = "full" | "focus" | "newspaper";
@@ -60,6 +62,8 @@ export default function Reader({
   onBack,
   savedLocations,
   onBookInit,
+  onToggleHighlights,
+  highlightsCount,
 }: ReaderProps) {
   // 1. State declarations
   const [chapter, setChapter] = useState("");
@@ -96,6 +100,61 @@ export default function Reader({
   const chapterTicksRef = useRef<{ percentage: number; label: string }[]>([]);
   const locationsReadyRef = useRef(false);
   const globalProgressRef = useRef(0);
+
+  // Lifting helper functions out of useEffect
+  const generateChapterTicks = useCallback(async (bookObj: Book) => {
+    const flattenChapters = (items: TOCItem[]): TOCItem[] => {
+      return items.reduce((acc: TOCItem[], item) => {
+        acc.push(item);
+        if (item.subitems && item.subitems.length > 0) {
+          acc.push(...flattenChapters(item.subitems));
+        }
+        return acc;
+      }, []);
+    };
+
+    const navigation = (bookObj as { navigation: { toc: TOCItem[] } }).navigation;
+    if (navigation && navigation.toc && bookObj.locations.length() > 0) {
+      const flattened = flattenChapters(navigation.toc);
+      allChaptersRef.current = flattened;
+      const tickPromises = flattened.map(async (chapterObj: TOCItem) => {
+        try {
+          const spine = (bookObj as any).spine;
+          const spineItem = spine.get(chapterObj.href);
+          if (!spineItem) return null;
+
+          const cfi = chapterObj.cfi || (spineItem as any).cfiBase || "";
+          const percentage = bookObj.locations.percentageFromCfi(cfi);
+          return { percentage: percentage * 100, label: chapterObj.label };
+        } catch (err) {
+          console.warn("Could not calculate percentage for chapter:", chapterObj.label, err);
+          return null;
+        }
+      });
+
+      const resolvedTicks = await Promise.all(tickPromises);
+      const ticks = resolvedTicks
+          .filter((t): t is { percentage: number; label: string } => t !== null && t.percentage >= 0)
+          .sort((a, b) => a.percentage - b.percentage);
+
+      const uniqueTicks = ticks.filter((tick, i) => {
+        if (i === 0) return true;
+        return Math.abs(tick.percentage - ticks[i - 1].percentage) > 0.1;
+      });
+
+      setChapterTicks(uniqueTicks);
+      chapterTicksRef.current = uniqueTicks;
+    }
+  }, []);
+
+  const startLocationGeneration = useCallback((bookObj: Book) => {
+    bookObj.locations.generate(1000).then(() => {
+      const locationsStr = bookObj.locations.save();
+      if (onBookInitRef.current) onBookInitRef.current(locationsStr);
+      setLocationsReady(true);
+      generateChapterTicks(bookObj);
+    });
+  }, [generateChapterTicks]);
 
   // 3. Refs for stable event handlers (syncing state to refs)
   const showPopoverRef = useRef(showPopover);
@@ -187,6 +246,7 @@ export default function Reader({
   // Init book
   useEffect(() => {
     if (!viewerRef.current || !bookData) return;
+    const initialLocation = initialCfi;
     const container = viewerRef.current;
     
     const book = ePub(bookData);
@@ -216,8 +276,8 @@ export default function Reader({
         "::selection": { "background": "rgba(129, 140, 248, 0.4) !important" },
       });
 
-      // Display the book IMMEDIATELY
-      rendition.display(initialCfi || undefined).then(() => {
+      // Display the book IMMEDIATELY (Only use initialLocation for the first display)
+      rendition.display(initialLocation || undefined).then(() => {
         setRenditionReady(true);
         
         // Hydration Logic: Load from cache or generate
@@ -234,60 +294,6 @@ export default function Reader({
           startLocationGeneration(book);
         }
       });
-      
-      const startLocationGeneration = (bookObj: Book) => {
-        bookObj.locations.generate(1000).then(() => {
-          const locationsStr = bookObj.locations.save();
-          if (onBookInitRef.current) onBookInitRef.current(locationsStr);
-          setLocationsReady(true);
-          generateChapterTicks(bookObj);
-        });
-      };
-
-      const generateChapterTicks = async (bookObj: Book) => {
-        const flattenChapters = (items: TOCItem[]): TOCItem[] => {
-          return items.reduce((acc: TOCItem[], item) => {
-            acc.push(item);
-            if (item.subitems && item.subitems.length > 0) {
-              acc.push(...flattenChapters(item.subitems));
-            }
-            return acc;
-          }, []);
-        };
-
-        const navigation = (bookObj as { navigation: { toc: TOCItem[] } }).navigation;
-        if (navigation && navigation.toc && bookObj.locations.length() > 0) {
-          const flattened = flattenChapters(navigation.toc);
-          allChaptersRef.current = flattened;
-          const tickPromises = flattened.map(async (chapterObj) => {
-            try {
-              const spineItem = bookObj.spine.get(chapterObj.href) as { cfiBase?: string } | undefined;
-              if (!spineItem) return null;
-
-              // Improved resolution: check if chapterObj has a cfi property directly (common in epubjs)
-              // Otherwise fallback to spine item's cfiBase
-              const cfi = chapterObj.cfi || (spineItem as { cfiBase?: string }).cfiBase || "";
-              const percentage = bookObj.locations.percentageFromCfi(cfi);
-              return { percentage: percentage * 100, label: chapterObj.label };
-            } catch (err) {
-              console.warn("Could not calculate percentage for chapter:", chapterObj.label, err);
-              return null;
-            }
-          });
-
-          const resolvedTicks = await Promise.all(tickPromises);
-          const ticks = resolvedTicks
-            .filter((t): t is { percentage: number; label: string } => t !== null && t.percentage >= 0)
-            .sort((a, b) => a.percentage - b.percentage);
-          
-          const uniqueTicks = ticks.filter((tick, i) => {
-            if (i === 0) return true;
-            return Math.abs(tick.percentage - ticks[i - 1].percentage) > 0.1;
-          });
-
-          setChapterTicks(uniqueTicks);
-        }
-      };
 
       // Chapter label & Progress
       rendition.on("relocated", (location: EpubLocation) => {
@@ -416,7 +422,19 @@ export default function Reader({
       if (renditionRef.current) renditionRef.current.destroy();
       if (bookRef.current) bookRef.current.destroy();
     };
-  }, [bookData, initialCfi, savedLocations]); // Prop-driven dependencies only
+  }, [bookData]); // DO NOT re-run on initialCfi or savedLocations change
+
+  // Handle savedLocations updates independently if locations are not already ready
+  useEffect(() => {
+    if (!bookRef.current || locationsReady || !savedLocations) return;
+    try {
+      bookRef.current.locations.load(savedLocations);
+      setLocationsReady(true);
+      generateChapterTicks(bookRef.current);
+    } catch (e) {
+      console.error("Failed to load late-arriving locations:", e);
+    }
+  }, [savedLocations, locationsReady, generateChapterTicks]);
 
   // Handle saved highlights independently to avoid re-rendering book
   const appliedCfis = useRef<Set<string>>(new Set());
@@ -687,6 +705,18 @@ export default function Reader({
           </svg>
           <span className="layout-mode-label">{layoutMode === 'full' ? 'Aa' : layoutMode === 'focus' ? 'Focus' : 'News'}</span>
         </button>
+        <button 
+          className="reader-highlights-toggle-btn" 
+          onClick={onToggleHighlights} 
+          type="button"
+          title="Toggle Highlights"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+          </svg>
+          <span className="highlights-count-badge">{highlightsCount}</span>
+        </button>
       </div>
 
       {/* Reader container */}
@@ -740,36 +770,9 @@ export default function Reader({
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          {popoverMode === "actions" && (
-            <div className="selection-actions">
-              <button className="selection-action-btn" onClick={() => setPopoverMode("colors")}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19 7-7 3 3-7 7-3-3z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="m2 2 5 5"/><path d="m5.2 9.1 2.8 2.8"/></svg>
-                Highlight
-              </button>
-              <button className="selection-action-btn" onClick={() => setPopoverMode("note")}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-8.5"/><path d="M18 13v6"/><path d="M18 8V2"/><path d="M11 21v-4a2 2 0 0 0-2-2H5"/><path d="M16 8l5-5"/><path d="M16 2l5 5"/></svg>
-                Note
-              </button>
-              <button className="selection-action-btn" onClick={handleCopy}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                Copy
-              </button>
-              <button className="selection-action-btn" onClick={handleDefine}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                Define
-              </button>
-            </div>
-          )}
-
-          {popoverMode === "colors" && (
-            <>
-              <div className="selection-menu-label">
-                <button className="selection-back-btn" onClick={() => setPopoverMode("actions")}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
-                </button>
-                Choose Color
-              </div>
-              <div className="selection-menu-colors">
+          {popoverMode !== "note" ? (
+            <div className="selection-actions-row">
+              <div className="selection-colors-compact">
                 {COLORS.map((c) => (
                   <button
                     key={c}
@@ -777,21 +780,24 @@ export default function Reader({
                     style={{ background: c }}
                     onClick={() => confirmHighlight(c)}
                     type="button"
-                    aria-label={`Highlight ${c}`}
+                    title={`Highlight ${c}`}
                   />
                 ))}
               </div>
-            </>
-          )}
-
-          {popoverMode === "note" && (
-            <div className="selection-note-container">
-              <div className="selection-menu-label">
-                 <button className="selection-back-btn" onClick={() => setPopoverMode("actions")}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
+              <div className="selection-util-actions">
+                <button className="selection-util-btn" onClick={() => setPopoverMode("note")} title="Add Note">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-8.5"/><path d="M11 21v-4a2 2 0 0 0-2-2H5"/><path d="M16 2l5 5"/></svg>
                 </button>
-                Add Annotation
+                <button className="selection-util-btn" onClick={handleCopy} title="Copy">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+                <button className="selection-util-btn" onClick={handleDefine} title="Define">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                </button>
               </div>
+            </div>
+          ) : (
+            <div className="selection-note-container">
               <textarea 
                 className="selection-note-input"
                 placeholder="Write your thoughts..."
@@ -802,10 +808,15 @@ export default function Reader({
                   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                     confirmNote();
                   }
+                  if (e.key === 'Escape') {
+                    setPopoverMode("actions");
+                  }
                 }}
               />
               <div className="selection-note-footer">
-                <span className="selection-note-hint">Ctrl + Enter to save</span>
+                <button className="selection-back-btn" onClick={() => setPopoverMode("actions")}>
+                  Cancel
+                </button>
                 <button 
                   className="selection-note-save-btn" 
                   onClick={confirmNote}
